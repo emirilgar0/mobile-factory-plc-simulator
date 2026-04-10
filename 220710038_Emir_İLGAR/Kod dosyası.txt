@@ -1,0 +1,348 @@
+using System;
+using System.Threading;
+using System.Collections.Generic;
+
+namespace MiniAkilliFabrika
+{
+    // BELLEK
+    class Bellek
+    {
+        private Dictionary<int, double> veri = new Dictionary<int, double>();
+
+        public double Oku(int adres)
+        {
+            return veri.ContainsKey(adres) ? veri[adres] : 0;
+        }
+
+        public void Yaz(int adres, double deger)
+        {
+            veri[adres] = deger;
+        }
+    }
+
+    // REGISTERLAR
+    class Registerlar
+    {
+        private double[] kayitlar = new double[8];
+
+        public double this[int indeks]
+        {
+            get { return kayitlar[indeks]; }
+            set { kayitlar[indeks] = value; }
+        }
+    }
+
+    // PID KONTROLOR
+    class PIDKontrol
+    {
+        public double HedefDeger = 30.0;
+        private double integral = 0;
+        private double oncekiHata = 0;
+        private double OranliKatsayi = 0.5;    // Kp
+        private double IntegralKatsayi = 0.1;   // Ki
+        private double TurevKatsayi = 0.05;     // Kd
+
+        public double Hesapla(double suankiDeger)
+        {
+            double hata = HedefDeger - suankiDeger;
+            integral += hata;
+            double turev = hata - oncekiHata;
+            double cikti = OranliKatsayi * hata + IntegralKatsayi * integral + TurevKatsayi * turev;
+            oncekiHata = hata;
+            return Math.Max(0, Math.Min(100, cikti + 50));
+        }
+    }
+
+    // LADDER BASAMAGI
+    class LadderBasamagi
+    {
+        public int Numara { get; set; }
+        public string Kosul { get; set; }
+        public string Aksiyon { get; set; }
+        public bool Aktif { get; set; }
+    }
+
+    // PLC SISTEMI
+    class PLCSistemi
+    {
+        // Adresler
+        private const int SENSOR_HAMMADDE = 1000;
+        private const int SENSOR_ISCI = 1004;
+        private const int SENSOR_SICAKLIK = 1008;
+        private const int SENSOR_BASINC = 1012;
+        private const int ACTUATOR_MAKINE = 2000;
+        private const int ACTUATOR_MOTOR = 2004;
+        private const int ACTUATOR_ALARM = 2008;
+
+        private Bellek bellek = new Bellek();
+        private Registerlar registerlar = new Registerlar();
+        private PIDKontrol pidKontrol = new PIDKontrol();
+        private List<LadderBasamagi> ladderBasamaklari = new List<LadderBasamagi>();
+
+        private int donguSayisi = 0;
+        private bool calisiyor = false;
+        private Random rastgeleSayi = new Random();
+
+        public PLCSistemi()
+        {
+            // Baslangic degerleri
+            bellek.Yaz(SENSOR_HAMMADDE, 8);
+            bellek.Yaz(SENSOR_ISCI, 1);
+            bellek.Yaz(SENSOR_SICAKLIK, 25);
+            bellek.Yaz(SENSOR_BASINC, 750);
+            bellek.Yaz(ACTUATOR_MAKINE, 0);
+            bellek.Yaz(ACTUATOR_MOTOR, 0);
+            bellek.Yaz(ACTUATOR_ALARM, 0);
+
+            // Ladder Logic Basamaklari
+            ladderBasamaklari.Add(new LadderBasamagi
+            {
+                Numara = 1,
+                Kosul = "Hammadde>=5 VE Isci=1",
+                Aksiyon = "Makine Baslat"
+            });
+            ladderBasamaklari.Add(new LadderBasamagi
+            {
+                Numara = 2,
+                Kosul = "Sicaklik>35",
+                Aksiyon = "Alarm Ac"
+            });
+            ladderBasamaklari.Add(new LadderBasamagi
+            {
+                Numara = 3,
+                Kosul = "Basinc<700",
+                Aksiyon = "Makine Durdur"
+            });
+        }
+
+        // SENSOR SIMULASYONU
+        private void SensorSimulasyonu()
+        {
+            double sicaklik = bellek.Oku(SENSOR_SICAKLIK);
+            sicaklik += (rastgeleSayi.NextDouble() - 0.5) * 2;
+            sicaklik = Math.Max(20, Math.Min(40, sicaklik));
+            bellek.Yaz(SENSOR_SICAKLIK, sicaklik);
+
+            double basinc = bellek.Oku(SENSOR_BASINC);
+            basinc += (rastgeleSayi.NextDouble() - 0.5) * 10;
+            basinc = Math.Max(650, Math.Min(800, basinc));
+            bellek.Yaz(SENSOR_BASINC, basinc);
+        }
+
+        // LADDER LOGIC
+        private void LadderCalistir()
+        {
+            double hammaddeMiktari = bellek.Oku(SENSOR_HAMMADDE);
+            double isciVarMi = bellek.Oku(SENSOR_ISCI);
+            double alarmDurumu = bellek.Oku(ACTUATOR_ALARM);
+
+            // BASAMAK 1
+            if (hammaddeMiktari >= 5 && isciVarMi == 1 && alarmDurumu == 0)
+            {
+                bellek.Yaz(ACTUATOR_MAKINE, 1);
+                ladderBasamaklari[0].Aktif = true;
+            }
+            else
+            {
+                ladderBasamaklari[0].Aktif = false;
+            }
+
+            // BASAMAK 2
+            double sicaklikDegeri = bellek.Oku(SENSOR_SICAKLIK);
+            if (sicaklikDegeri > 35)
+            {
+                bellek.Yaz(ACTUATOR_ALARM, 1);
+                bellek.Yaz(ACTUATOR_MAKINE, 0);
+                ladderBasamaklari[1].Aktif = true;
+                LogYaz("KESME: Asiri sicaklik!");
+            }
+            else
+            {
+                ladderBasamaklari[1].Aktif = false;
+            }
+
+            // BASAMAK 3
+            double basincDegeri = bellek.Oku(SENSOR_BASINC);
+            if (basincDegeri < 700)
+            {
+                bellek.Yaz(ACTUATOR_MAKINE, 0);
+                bellek.Yaz(ACTUATOR_ALARM, 1);
+                ladderBasamaklari[2].Aktif = true;
+                LogYaz("KESME: Dusuk basinc!");
+            }
+            else
+            {
+                ladderBasamaklari[2].Aktif = false;
+            }
+        }
+
+        // PID CALISTIR
+        private void PIDCalistir()
+        {
+            double sicaklikDegeri = bellek.Oku(SENSOR_SICAKLIK);
+            double motorPWMDegeri = pidKontrol.Hesapla(sicaklikDegeri);
+            bellek.Yaz(ACTUATOR_MOTOR, motorPWMDegeri);
+        }
+
+        // EKRAN GOSTER
+        private void EkraniGoster()
+        {
+            Console.Clear();
+
+            // Ana Başlık
+            Console.ForegroundColor = ConsoleColor.Cyan;
+            Console.WriteLine("========================================");
+            Console.WriteLine("   MINI AKILLI FABRIKA - PLC SIMULATOR");
+            Console.WriteLine("========================================");
+            Console.ResetColor();
+            Console.WriteLine();
+
+            // Sistem Durumu
+            string sistemDurumu = calisiyor ? "CALISIYOR" : "DURDURULDU";
+            Console.Write("Dongu: {0}  |  Durum: ", donguSayisi);
+            Console.ForegroundColor = calisiyor ? ConsoleColor.Green : ConsoleColor.Red;
+            Console.WriteLine(sistemDurumu);
+            Console.ResetColor();
+            Console.WriteLine();
+
+            // SENSORLER
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine("--- SENSORLER (Giris) ---");
+            Console.ResetColor();
+            Console.WriteLine("[1000] Hammadde  : {0} birim", bellek.Oku(SENSOR_HAMMADDE));
+            Console.WriteLine("[1004] Isci      : {0}", bellek.Oku(SENSOR_ISCI) == 1 ? "VAR" : "YOK");
+            Console.WriteLine("[1008] Sicaklik  : {0:F1} C", bellek.Oku(SENSOR_SICAKLIK));
+            Console.WriteLine("[1012] Basinc    : {0:F0} Pa", bellek.Oku(SENSOR_BASINC));
+            Console.WriteLine();
+
+            // AKTUATORLER
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine("--- AKTUATORLER (Cikis) ---");
+            Console.ResetColor();
+            string makineDurumu = bellek.Oku(ACTUATOR_MAKINE) == 1 ? "ACIK" : "KAPALI";
+            Console.WriteLine("[2000] Makine    : {0}", makineDurumu);
+            Console.WriteLine("[2004] Motor PWM : {0:F0}%", bellek.Oku(ACTUATOR_MOTOR));
+            string alarmDurumu = bellek.Oku(ACTUATOR_ALARM) == 1 ? "ACIK" : "KAPALI";
+            Console.WriteLine("[2008] Alarm     : {0}", alarmDurumu);
+            Console.WriteLine();
+
+            // PID
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine("--- PID KONTROLOR ---");
+            Console.ResetColor();
+            Console.WriteLine("Setpoint: {0} C", pidKontrol.HedefDeger);
+            Console.WriteLine("Hata    : {0:F2}", pidKontrol.HedefDeger - bellek.Oku(SENSOR_SICAKLIK));
+            Console.WriteLine();
+
+            // LADDER
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine("--- LADDER LOGIC ---");
+            Console.ResetColor();
+            foreach (var basamak in ladderBasamaklari)
+            {
+                string aktiflikDurumu = basamak.Aktif ? "[AKTIF]" : "[PASIF]";
+                Console.WriteLine(
+                    "RUNG {0}: {1} -> {2} {3}",
+                    basamak.Numara, basamak.Kosul, basamak.Aksiyon, aktiflikDurumu
+                );
+            }
+            Console.WriteLine();
+
+            // Komutlar
+            Console.ForegroundColor = ConsoleColor.Cyan;
+            Console.WriteLine("========================================");
+            Console.ResetColor();
+
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine("Komutlar: [S]tart [P]ause [R]eset [Q]uit");
+            Console.ResetColor();
+
+            Console.Write("Komut giriniz: ");
+        }
+
+
+        // LOG
+        private void LogYaz(string mesaj)
+        {
+            Console.WriteLine();
+            Console.WriteLine("[{0}] {1}", DateTime.Now.ToString("HH:mm:ss"), mesaj);
+            Thread.Sleep(500);
+        }
+
+        // ANA DONGU
+        public void Calistir()
+        {
+            bool programCikis = false;
+            Thread sistemIslemi = null;
+
+            while (!programCikis)
+            {
+                EkraniGoster();
+                var basilanTus = Console.ReadKey(true).Key;
+
+                switch (basilanTus)
+                {
+                    case ConsoleKey.S:
+                        if (!calisiyor)
+                        {
+                            calisiyor = true;
+                            LogYaz("Sistem baslatildi");
+                            sistemIslemi = new Thread(() =>
+                            {
+                                while (calisiyor)
+                                {
+                                    donguSayisi++;
+                                    SensorSimulasyonu();
+                                    LadderCalistir();
+                                    PIDCalistir();
+                                    Thread.Sleep(1000);
+                                }
+                            });
+                            sistemIslemi.Start();
+                        }
+                        break;
+
+                    case ConsoleKey.P:
+                        if (calisiyor)
+                        {
+                            calisiyor = false;
+                            LogYaz("Sistem durduruldu");
+                        }
+                        break;
+
+                    case ConsoleKey.R:
+                        calisiyor = false;
+                        donguSayisi = 0;
+                        bellek.Yaz(SENSOR_HAMMADDE, 8);
+                        bellek.Yaz(SENSOR_ISCI, 1);
+                        bellek.Yaz(SENSOR_SICAKLIK, 25);
+                        bellek.Yaz(SENSOR_BASINC, 750);
+                        bellek.Yaz(ACTUATOR_MAKINE, 0);
+                        bellek.Yaz(ACTUATOR_MOTOR, 0);
+                        bellek.Yaz(ACTUATOR_ALARM, 0);
+                        LogYaz("Sistem sifirlandi");
+                        break;
+
+                    case ConsoleKey.Q:
+                        calisiyor = false;
+                        programCikis = true;
+                        LogYaz("Program sonlandiriliyor...");
+                        break;
+                }
+
+                Thread.Sleep(100);
+            }
+        }
+    }
+
+    // PROGRAM
+    class Program
+    {
+        static void Main(string[] args)
+        {
+            Console.Title = "PLC Simulator";
+            PLCSistemi plcSistemi = new PLCSistemi();
+            plcSistemi.Calistir();
+        }
+    }
+}
